@@ -117,7 +117,7 @@ def bater_ponto(cpf, nome):
     if proximo_evento == "Jornada Finalizada":
         return "Sua jornada de hoje já foi completamente registada.", "warning"
 
-    # --- busca a filial do funcionário ---
+    
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -127,14 +127,13 @@ def bater_ponto(cpf, nome):
             resultado = cursor.fetchone()
     filial = resultado[0] if resultado else None
 
-    # --- define o horário conforme a filial ---
     if filial in ("Filial 03", "Filial 3", "Filial 04", "Filial 4"):
         horarios = {
             "Entrada": time(7, 30),
             "Saída":   time(17, 30)
         }
     else:
-        horarios = HORARIOS_PADRAO  # { "Entrada": 08:00, "Saída": 18:00 }
+        horarios = HORARIOS_PADRAO 
 
     hora_prevista     = horarios[proximo_evento]
     datetime_previsto = agora.replace(
@@ -206,18 +205,44 @@ def atualizar_registro(id_registro, novo_horario=None, nova_observacao=None):
                     cursor.execute("UPDATE registros SET observacao = %s WHERE id = %s", (nova_observacao, id_registro))
                 if novo_horario is not None:
                     novo_obj = datetime.strptime(novo_horario, "%H:%M:%S").time()
-                    cursor.execute("SELECT descricao, data FROM registros WHERE id = %s", (id_registro,))
+
+                    cursor.execute("""
+                            SELECT r.descricao, r.data, r.cpf_funcionario, f.filial
+                            FROM registros r
+                            JOIN funcionarios f ON f.cpf = r.cpf_funcionario
+                            WHERE r.id = %s
+                        """, (id_registro,))
                     row = cursor.fetchone()
+
                     if row:
-                        hora_prevista = HORARIOS_PADRAO.get(row['descricao'])
-                        if hora_prevista:
-                            dt_reg = datetime.strptime(row['data'], "%Y-%m-%d")
-                            dt_previsto = dt_reg.replace(hour=hora_prevista.hour, minute=hora_prevista.minute)
-                            dt_novo = dt_reg.replace(hour=novo_obj.hour, minute=novo_obj.minute, second=novo_obj.second)
-                            diff_bruta = round((dt_novo - dt_previsto).total_seconds() / 60)
-                            diff_final = 0 if abs(diff_bruta) <= TOLERANCIA_MINUTOS else diff_bruta - TOLERANCIA_MINUTOS if diff_bruta > 0 else diff_bruta + TOLERANCIA_MINUTOS
-                            cursor.execute("UPDATE registros SET hora = %s, diferenca_min = %s WHERE id = %s", (novo_horario, diff_final, id_registro))
-            conn.commit()
+                        descricao = row['descricao']
+                        data_str  = row['data']
+                        filial_tx = row['filial'] 
+
+                        filial_num = None
+                        if filial_tx:
+                           m = re.search(r'\d+', str(filial_tx))
+                           filial_num = int(m.group()) if m else None
+
+                    hora_prevista = get_horario_padrao(filial_num, descricao)
+
+                    dt_reg_dia   = datetime.strptime(data_str, "%Y-%m-%d")
+                    dt_previsto  = dt_reg_dia.replace(hour=hora_prevista.hour, minute=hora_prevista.minute, second=0, microsecond=0)
+                    dt_novo      = dt_reg_dia.replace(hour=novo_obj.hour, minute=novo_obj.minute, second=novo_obj.second, microsecond=0)
+
+                    diff_bruta = round((dt_novo - dt_previsto).total_seconds() / 60)
+
+                    if abs(diff_bruta) <= TOLERANCIA_MINUTOS:
+                       diff_final = 0
+                    elif diff_bruta > 0:
+                       diff_final = diff_bruta - TOLERANCIA_MINUTOS
+                    else:
+                       diff_final = diff_bruta + TOLERANCIA_MINUTOS
+
+                    cursor.execute(
+                      "UPDATE registros SET hora = %s, diferenca_min = %s WHERE id = %s",
+                      (novo_horario, diff_final, id_registro)
+        )
     except ValueError: return "Formato de hora inválido. Use HH:MM:SS.", "error"
     except psycopg2.Error as e: return f"Erro no banco de dados: {e}", "error"
     return "Registro atualizado com sucesso.", "success"

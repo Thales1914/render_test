@@ -195,17 +195,8 @@ def tela_admin():
                     except:
                          m = re.search(r'\d+', str(filial_raw))
                          filial = int(m.group()) if m else None
-
-                    data_evento = datetime.strptime(row['Data'], '%Y-%m-%d').date()
-                    hora_reg    = datetime.strptime(row['Hora'], '%H:%M:%S').time()
-                    dt_reg      = datetime.combine(data_evento, hora_reg)
-
-           
-                    horario_padrao = get_horario_padrao(filial, row['Descrição'])
-                    dt_pad         = datetime.combine(data_evento, horario_padrao)
-
-         
-                    diff       = round((dt_reg - dt_pad).total_seconds() / 60)
+            
+                    diff = int(row['Diferença (min)']) if pd.notnull(row['Diferença (min)']) else 0                      
                     cor_diff   = "green" if diff == 0 else "red" if diff > 0 else "lightgray"
                     texto_diff = (
                         "Em ponto"
