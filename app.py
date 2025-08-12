@@ -19,9 +19,6 @@ from services import (
     excluir_funcionario
 )
 
-# -----------------------------------------------------------------------------
-# Configuração da página
-# -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Ponto Omega",
     page_icon="assets/logo.png",
@@ -50,9 +47,6 @@ def carregar_css_customizado():
 
 carregar_css_customizado()
 
-# -----------------------------------------------------------------------------
-# Estado
-# -----------------------------------------------------------------------------
 if 'user_info' not in st.session_state:
     st.session_state.user_info = None
 if 'edit_id' not in st.session_state:
@@ -60,9 +54,7 @@ if 'edit_id' not in st.session_state:
 if 'status_message' not in st.session_state:
     st.session_state.status_message = None
 
-# -----------------------------------------------------------------------------
-# Telas
-# -----------------------------------------------------------------------------
+
 def tela_de_login():
     with st.container():
         _, col2, _ = st.columns([1, 2, 1])
@@ -86,7 +78,6 @@ def tela_funcionario():
     st.title(f"Bem-vindo, {st.session_state.user_info['nome']}!")
     tab1, tab2 = st.tabs(["Registrar Ponto", "Meus Registros"])
 
-    # ----------------------------- Registrar Ponto ----------------------------
     with tab1:
         st.header("Registro de Ponto")
         proximo_evento = obter_proximo_evento(st.session_state.user_info['cpf'])
@@ -102,7 +93,6 @@ def tela_funcionario():
                 else:
                     st.error(mensagem)
 
-    # ------------------------------ Meus Registros ---------------------------
     with tab2:
         st.header("Histórico dos Meus Pontos")
         df_todos_registros = ler_registros_df()
@@ -116,11 +106,10 @@ def tela_funcionario():
                 with st.container(border=True):
                     data_br = datetime.strptime(row['Data'], '%Y-%m-%d').strftime('%d/%m/%Y')
 
-                    # 1) Status baseado na diferença salva (com tolerância)
                     diff = int(row['Diferença (min)']) if pd.notnull(row['Diferença (min)']) else 0
                     cor_diff = "green" if diff == 0 else "red" if diff > 0 else "lightgray"
 
-                    # 2) Diferença "bruta" apenas para detalhar quando estiver Em ponto (tolerância)
+                  
                     filial_raw = row.get('Filial')
                     try:
                         filial = int(filial_raw)
@@ -161,7 +150,6 @@ def tela_funcionario():
 def tela_admin():
     st.title("Painel do Administrador")
 
-    # Mensagem de status global (ex: após editar/excluir)
     if st.session_state.status_message:
         msg, tipo = st.session_state.status_message
         if tipo == "success":
@@ -176,7 +164,6 @@ def tela_admin():
         ["Relatório de Pontos", "Cadastrar Funcionário", "Visualizar Funcionários", "Importar Funcionários"]
     )
 
-    # --------------------------------- Relatório -----------------------------
     with tab1:
         st.header("Filtros do Relatório")
 
@@ -215,6 +202,25 @@ def tela_admin():
             setores = sorted(funcionarios_da_filial['tipo'].dropna().unique())
             setor_selecionado = st.selectbox("Filtrar por setor:", options=["Todos os Setores"] + setores)
 
+        col5_filtros, = st.columns(1)
+
+        with col5_filtros:
+
+            base_func = funcionarios_da_filial
+            if setor_selecionado != "Todos os Setores":
+                base_func = base_func[base_func['tipo'] == setor_selecionado]
+
+            if not base_func.empty:
+                base_func = base_func.sort_values('nome')
+                opcoes_func = ["Todos os Funcionários"] + [
+                    f"{row['nome']} ({row['codigo']})" for _, row in base_func.iterrows()
+                ]
+            else:
+                opcoes_func = ["Todos os Funcionários"]
+
+            funcionario_selecionado = st.selectbox("Filtrar por funcionário:", options=opcoes_func)
+
+
         with col4_filtros:
             data_inicio = st.date_input("Data Início", value=date.today().replace(day=1), format="DD/MM/YYYY")
             data_fim = st.date_input("Data Fim", value=date.today(), format="DD/MM/YYYY")
@@ -232,6 +238,14 @@ def tela_admin():
         if setor_selecionado != "Todos os Setores":
             df_filtrado = df_filtrado[df_filtrado['Setor'] == setor_selecionado]
 
+        if funcionario_selecionado != "Todos os Funcionários":
+            import re as _re
+            m = _re.search(r"\((.*?)\)$", funcionario_selecionado)
+            cod_forte_escolhido = m.group(1) if m else None
+            if cod_forte_escolhido:
+                df_filtrado = df_filtrado[df_filtrado['Código Forte'] == cod_forte_escolhido]
+
+
         if not df_filtrado.empty:
             df_filtrado['Data_dt'] = pd.to_datetime(df_filtrado['Data'], format='%Y-%m-%d', errors='coerce').dt.date
             df_filtrado = df_filtrado.dropna(subset=['Data_dt'])
@@ -248,7 +262,6 @@ def tela_admin():
                 with st.container(border=True):
                     data_br = row['Data_dt'].strftime('%d/%m/%Y')
 
-                    # Filial -> número quando possível
                     filial_raw = row['Filial']
                     try:
                         filial = int(filial_raw)
@@ -256,19 +269,15 @@ def tela_admin():
                         m = re.search(r'\d+', str(filial_raw))
                         filial = int(m.group()) if m else None
 
-                    # Monta datetime do registro
                     data_evento = datetime.strptime(row['Data'], '%Y-%m-%d').date()
                     hora_reg = datetime.strptime(row['Hora'], '%H:%M:%S').time()
                     dt_reg = datetime.combine(data_evento, hora_reg)
 
-                    # Horário previsto conforme filial/evento
                     horario_padrao = get_horario_padrao(filial, row['Descrição'])
                     dt_pad = datetime.combine(data_evento, horario_padrao)
 
-                    # Diferença "bruta" para detalhar Em ponto
                     raw = round((dt_reg - dt_pad).total_seconds() / 60)
 
-                    # Status baseado no valor salvo no banco (com tolerância)
                     diff = int(row['Diferença (min)']) if pd.notnull(row['Diferença (min)']) else 0
                     cor_diff = "green" if diff == 0 else "red" if diff > 0 else "lightgray"
 
@@ -351,7 +360,6 @@ def tela_admin():
                 use_container_width=True
             )
 
-    # --------------------------- Cadastrar Funcionário ------------------------
     with tab2:
         st.header("Cadastrar Novo Funcionário")
         with st.form("add_employee_form", clear_on_submit=True):
@@ -372,7 +380,6 @@ def tela_admin():
                 st.session_state.status_message = (msg, tipo)
                 st.rerun()
 
-    # -------------------------- Visualizar Funcionários ----------------------
     with tab3:
         st.header("Funcionários Cadastrados no Sistema")
         todos_funcionarios_df = ler_funcionarios_df()
@@ -409,7 +416,6 @@ def tela_admin():
                     if st.button("Cancelar", use_container_width=True):
                         st.rerun()
 
-    # --------------------------- Importar Funcionários -----------------------
     with tab4:
         st.header("Importar Funcionários em Lote via CSV")
         st.info("O arquivo CSV precisa ter as colunas: `Arquivo`, `Empresa`, `CNPJ`, `CodTipo`, `Tipo`, `CodForte`, `Nome` e `CPF`. O CPF será o usuário e o Código Forte a senha.")
@@ -433,9 +439,6 @@ def tela_admin():
             else:
                 st.warning("Por favor, selecione um arquivo CSV.")
 
-# -----------------------------------------------------------------------------
-# Router simples (login / admin / funcionário)
-# -----------------------------------------------------------------------------
 if st.session_state.user_info:
     st.sidebar.image("assets/logo.png", use_container_width=True)
     if st.sidebar.button("Sair"):
