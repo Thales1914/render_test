@@ -26,6 +26,11 @@ def get_db_connection():
         yield conn
     finally:
         conn.close()
+        
+def get_horario_padrao(filial: int, proximo_evento: str) -> time:
+    if filial in (3, 4):
+        return time(7, 30) if proximo_evento == "Entrada" else time(17, 30)
+    return time(8, 0) if proximo_evento == "Entrada" else time(18, 0)        
 
 
 def _hash_senha(senha: str) -> str:
@@ -111,22 +116,81 @@ def bater_ponto(cpf, nome):
     proximo_evento = obter_proximo_evento(cpf)
     if proximo_evento == "Jornada Finalizada":
         return "Sua jornada de hoje já foi completamente registada.", "warning"
-    hora_prevista = HORARIOS_PADRAO[proximo_evento]
-    datetime_previsto = agora.replace(hour=hora_prevista.hour, minute=hora_prevista.minute, second=0, microsecond=0)
-    diff_bruta = round((agora - datetime_previsto).total_seconds() / 60)
-    diff_final = 0 if abs(diff_bruta) <= TOLERANCIA_MINUTOS else diff_bruta - TOLERANCIA_MINUTOS if diff_bruta > 0 else diff_bruta + TOLERANCIA_MINUTOS
-    novo_reg = (f"{cpf}-{agora.isoformat()}", cpf, nome, agora.strftime("%Y-%m-%d"), agora.strftime("%H:%M:%S"), proximo_evento, diff_final, "")
+
+    # --- busca a filial do funcionário ---
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("INSERT INTO registros (id, cpf_funcionario, nome, data, hora, descricao, diferenca_min, observacao) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", novo_reg)
+            cursor.execute(
+                "SELECT filial FROM funcionarios WHERE cpf = %s",
+                (cpf,)
+            )
+            resultado = cursor.fetchone()
+    filial = resultado[0] if resultado else None
+
+    # --- define o horário conforme a filial ---
+    if filial in ("Filial 03", "Filial 3", "Filial 04", "Filial 4"):
+        horarios = {
+            "Entrada": time(7, 30),
+            "Saída":   time(17, 30)
+        }
+    else:
+        horarios = HORARIOS_PADRAO  # { "Entrada": 08:00, "Saída": 18:00 }
+
+    hora_prevista     = horarios[proximo_evento]
+    datetime_previsto = agora.replace(
+        hour=hora_prevista.hour,
+        minute=hora_prevista.minute,
+        second=0,
+        microsecond=0
+    )
+
+    diff_bruta = round((agora - datetime_previsto).total_seconds() / 60)
+    diff_final = (
+        0 if abs(diff_bruta) <= TOLERANCIA_MINUTOS
+        else diff_bruta - TOLERANCIA_MINUTOS
+        if diff_bruta > 0
+        else diff_bruta + TOLERANCIA_MINUTOS
+    )
+
+    novo_reg = (
+        f"{cpf}-{agora.isoformat()}",
+        cpf,
+        nome,
+        agora.strftime("%Y-%m-%d"),
+        agora.strftime("%H:%M:%S"),
+        proximo_evento,
+        diff_final,
+        ""
+    )
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO registros (id, cpf_funcionario, nome, data, hora, descricao, diferenca_min, observacao) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                novo_reg
+            )
         conn.commit()
+
     msg_extra = ""
     if diff_final != 0:
-        msg_extra = f" ({diff_final} min de atraso)" if diff_final > 0 else f" ({-diff_final} min de adiantamento)"
+        msg_extra = (
+            f" ({diff_final} min de atraso)"
+            if diff_final > 0
+            else f" ({-diff_final} min de adiantamento)"
+        )
+
     status_final = " (em ponto)"
-    if diff_final != 0: status_final = ""
-    elif diff_bruta != 0: status_final = " (dentro da tolerância, registrado como 'em ponto')"
-    return f"'{proximo_evento}' registado para {nome} às {agora.strftime('%H:%M:%S')}{msg_extra}{status_final}.", "success"
+    if diff_final != 0:
+        status_final = ""
+    elif diff_bruta != 0:
+        status_final = " (dentro da tolerância, registrado como 'em ponto')"
+
+    return (
+        f"'{proximo_evento}' registado para {nome} às {agora.strftime('%H:%M:%S')}"
+        f"{msg_extra}{status_final}.",
+        "success"
+    )
 
 def ler_registros_df():
     with get_db_connection() as conn:
@@ -325,3 +389,4 @@ def gerar_arquivo_excel(df_organizado, df_bruto, nome_empresa, cnpj, data_inicio
                 worksheet.column_dimensions[column_letter].width = adjusted_width
     output_buffer.seek(0)
     return output_buffer
+

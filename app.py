@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import time
+import re
+from services import get_horario_padrao
 from datetime import date, datetime
 from services import (
     ler_registros_df,
@@ -184,21 +186,46 @@ def tela_admin():
             for index, row in df_visualizacao.iterrows():
                 registro_id = row['ID']
                 with st.container(border=True):
+       
                     data_br = row['Data_dt'].strftime('%d/%m/%Y')
-                    diff = row['Diferença (min)']
-                    cor_diff = "green" if diff == 0 else "red" if diff > 0 else "lightgray"
-                    texto_diff = "Em ponto" if diff == 0 else f"{'+' if diff > 0 else ''}{diff} min ({'atraso' if diff > 0 else 'adiantado'})"
+
+                    filial_raw = row['Filial']
+                    try:
+                        filial = int(filial_raw)
+                    except:
+                         m = re.search(r'\d+', str(filial_raw))
+                         filial = int(m.group()) if m else None
+
+                    data_evento = datetime.strptime(row['Data'], '%Y-%m-%d').date()
+                    hora_reg    = datetime.strptime(row['Hora'], '%H:%M:%S').time()
+                    dt_reg      = datetime.combine(data_evento, hora_reg)
+
+           
+                    horario_padrao = get_horario_padrao(filial, row['Descrição'])
+                    dt_pad         = datetime.combine(data_evento, horario_padrao)
+
+         
+                    diff       = round((dt_reg - dt_pad).total_seconds() / 60)
+                    cor_diff   = "green" if diff == 0 else "red" if diff > 0 else "lightgray"
+                    texto_diff = (
+                        "Em ponto"
+                        if diff == 0
+                        else f"{'+' if diff > 0 else ''}{diff} min ({'atrasado' if diff > 0 else 'adiantado'})"
+                    )
+
                     col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 2, 3, 1])
                     col1.text(f"Nome: {row['Nome']}")
                     col2.text(f"Empresa: {row['Empresa']}")
                     col3.text(f"Evento: {row['Descrição']}")
                     col4.text(f"Data: {data_br}")
-                    col5.markdown(f"Hora: {row['Hora']} | Status: <font color='{cor_diff}'>**{texto_diff}**</font>", unsafe_allow_html=True)
-                    
-                    with col6:
-                        if st.button("Editar", key=f"edit_{registro_id}"):
-                            st.session_state.edit_id = registro_id
-                            st.rerun()
+                    col5.markdown(
+                        f"Hora: {row['Hora']} | Status: <font color='{cor_diff}'>**{texto_diff}**</font>",
+                        unsafe_allow_html=True
+                    )
+
+                    if col6.button("Editar", key=f"edit_{registro_id}_{index}"):
+                       st.session_state.edit_id = registro_id
+                       st.rerun()
                             
                     if st.session_state.edit_id == registro_id:
                         edit_col1, edit_col2 = st.columns(2)
