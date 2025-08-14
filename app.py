@@ -81,27 +81,49 @@ def tela_funcionario():
     with tab1:
         st.header("Registro de Ponto")
         proximo_evento = obter_proximo_evento(st.session_state.user_info['cpf'])
+
+        if 'botao_bloqueado' not in st.session_state:
+            st.session_state.botao_bloqueado = False
+
         if proximo_evento == "Jornada Finalizada":
             st.info("Sua jornada de hoje já foi completamente registrada. Bom descanso!")
         else:
-            if st.button(f"Confirmar {proximo_evento}", type="primary", use_container_width=True):
-                mensagem, tipo = bater_ponto(st.session_state.user_info['cpf'], st.session_state.user_info['nome'])
+            botao_registrar = st.button(
+                f"Confirmar {proximo_evento}",
+                type="primary",
+                use_container_width=True,
+                disabled=st.session_state.botao_bloqueado
+            )
+
+            if botao_registrar:
+                st.session_state.botao_bloqueado = True
+                mensagem, tipo = bater_ponto(
+                    st.session_state.user_info['cpf'],
+                    st.session_state.user_info['nome']
+                )
+
                 if tipo == "success":
                     st.success(mensagem)
                     time.sleep(1)
                     st.rerun()
                 else:
                     st.error(mensagem)
+                    st.session_state.botao_bloqueado = False
 
     with tab2:
-        st.header("Histórico dos Meus Pontos")
-        df_todos_registros = ler_registros_df()
-        meus_registros_df = df_todos_registros[df_todos_registros['Código Forte'] == st.session_state.user_info['codigo']]
+        st.header("Meus Registros")
+        meus_registros_df = ler_registros_df()
+        meus_registros_df = meus_registros_df[
+            meus_registros_df['Código Forte'] == st.session_state.user_info['codigo']
+        ]
 
         if meus_registros_df.empty:
             st.info("Você ainda não possui registros de ponto.")
         else:
-            df_visualizacao = meus_registros_df.sort_values(by=["Data", "Hora"], ascending=False)
+            df_visualizacao = meus_registros_df.sort_values(
+                by=["Data", "Hora"], ascending=False
+            )
+
             for _, row in df_visualizacao.iterrows():
                 with st.container(border=True):
                     data_br = datetime.strptime(row['Data'], '%Y-%m-%d').strftime('%d/%m/%Y')
@@ -109,7 +131,6 @@ def tela_funcionario():
                     diff = int(row['Diferença (min)']) if pd.notnull(row['Diferença (min)']) else 0
                     cor_diff = "green" if diff == 0 else "red" if diff > 0 else "lightgray"
 
-                  
                     filial_raw = row.get('Filial')
                     try:
                         filial = int(filial_raw)
@@ -144,8 +165,10 @@ def tela_funcionario():
                         f"Status: **<font color='{cor_diff}'>{texto_diff}</font>**",
                         unsafe_allow_html=True
                     )
+
                     if row.get('Observação'):
                         st.markdown(f"**Obs:** *{row['Observação']}*")
+
 
 def tela_admin():
     st.title("Painel do Administrador")

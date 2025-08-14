@@ -135,10 +135,22 @@ def obter_proximo_evento(cpf):
     hoje_str = datetime.now(FUSO_HORARIO).strftime("%Y-%m-%d")
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT COUNT(*) FROM registros WHERE cpf_funcionario = %s AND data = %s", (cpf, hoje_str))
-            num_pontos = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT COUNT(*) AS total FROM registros WHERE cpf_funcionario = %s AND data = %s",
+                (cpf, hoje_str)
+            )
+            result = cursor.fetchone()
+
+            if result is None:
+                num_pontos = 0
+            elif isinstance(result, dict):
+                num_pontos = result.get("total", 0)
+            else:
+                num_pontos = result[0] if len(result) > 0 else 0
+
     eventos = list(HORARIOS_PADRAO.keys())
     return eventos[num_pontos] if num_pontos < len(eventos) else "Jornada Finalizada"
+
 
 def bater_ponto(cpf, nome):
     agora = datetime.now(FUSO_HORARIO)
@@ -146,7 +158,6 @@ def bater_ponto(cpf, nome):
     if proximo_evento == "Jornada Finalizada":
         return "Sua jornada de hoje já foi completamente registada.", "warning"
 
-    # --- busca a filial do funcionário ---
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
