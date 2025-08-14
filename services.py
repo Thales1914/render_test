@@ -1,28 +1,56 @@
-import re
-import psycopg2
-import psycopg2.extras
-import pandas as pd
-from datetime import datetime, time
-from config import FUSO_HORARIO, HORARIOS_PADRAO, TOLERANCIA_MINUTOS
-import hashlib
-from contextlib import contextmanager
-import numpy as np
-import io
 import os
+import re
+import io
+import hashlib
+import numpy as np
+import pandas as pd
+from typing import Optional, Dict, Any
+from datetime import datetime, time
+from contextlib import contextmanager
 from urllib.parse import urlparse
 
-url = urlparse(os.getenv("DATABASE_URL"))
+import psycopg2
+import psycopg2.extras
+from sqlalchemy import create_engine, text as _sqltext
 
-DB_HOST = url.hostname
-DB_PORT = url.port
-DB_NAME = url.path[1:]
-DB_USER = url.username
-DB_PASS = url.password
+from config import FUSO_HORARIO, HORARIOS_PADRAO, TOLERANCIA_MINUTOS
+
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL não definida.")
+
+
+DB_URL_SSL = DATABASE_URL if "sslmode=" in DATABASE_URL else f"{DATABASE_URL}?sslmode=require"
+
+engine = create_engine(
+    DB_URL_SSL,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    future=True,
+)
+
+def query_df(sql: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+
+    with engine.connect() as conn:
+        return pd.read_sql(_sqltext(sql), conn, params=params or {})
+
+_u = urlparse(DATABASE_URL)
+DB_HOST, DB_PORT, DB_NAME = _u.hostname, _u.port, _u.path[1:]
+DB_USER, DB_PASS = _u.username, _u.password
 
 @contextmanager
 def get_db_connection():
-    conn_string = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} port={DB_PORT}"
-    conn = psycopg2.connect(conn_string)
+
+    conn_str = (
+        f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} "
+        f"host={DB_HOST} port={DB_PORT} sslmode=require "
+        f"connect_timeout=5 keepalives=1 keepalives_idle=30 "
+        f"keepalives_interval=10 keepalives_count=5"
+    )
+    conn = psycopg2.connect(conn_str, cursor_factory=psycopg2.extras.RealDictCursor)
     try:
         yield conn
     finally:
@@ -87,12 +115,12 @@ def _obter_ou_criar_empresa_id(nome_empresa, cnpj, cursor):
 
 def ler_empresas():
     with get_db_connection() as conn:
-        return pd.read_sql_query("SELECT id, nome_empresa, cnpj FROM empresas ORDER BY nome_empresa", conn)
+        return query_df("SELECT id, nome_empresa, cnpj FROM empresas ORDER BY nome_empresa")
 
 def ler_funcionarios_df():
     with get_db_connection() as conn:
         query = "SELECT f.codigo, f.nome, f.cpf, f.cod_tipo, f.tipo, f.filial, f.role, f.empresa_id, e.nome_empresa, e.cnpj FROM funcionarios f LEFT JOIN empresas e ON f.empresa_id = e.id"
-        return pd.read_sql_query(query, conn)
+        return query_df(query)
 
 def verificar_login(cpf, senha_cod_forte):
     senha_hash = _hash_senha(senha_cod_forte)
@@ -118,7 +146,7 @@ def bater_ponto(cpf, nome):
     if proximo_evento == "Jornada Finalizada":
         return "Sua jornada de hoje já foi completamente registada.", "warning"
 
-    
+    # --- busca a filial do funcionário ---
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -134,7 +162,7 @@ def bater_ponto(cpf, nome):
             "Saída":   time(17, 30)
         }
     else:
-        horarios = HORARIOS_PADRAO 
+        horarios = HORARIOS_PADRAO
 
     hora_prevista     = horarios[proximo_evento]
     datetime_previsto = agora.replace(
@@ -195,58 +223,78 @@ def bater_ponto(cpf, nome):
 def ler_registros_df():
     with get_db_connection() as conn:
         query = "SELECT r.id, f.codigo, r.nome, r.data, r.hora, r.descricao, r.diferenca_min, r.observacao, e.nome_empresa, e.cnpj, f.tipo as setor, f.filial FROM registros r JOIN funcionarios f ON r.cpf_funcionario = f.cpf LEFT JOIN empresas e ON f.empresa_id = e.id"
-        df = pd.read_sql_query(query, conn)
+        df = query_df(query)
     return df.rename(columns={'id': 'ID', 'codigo': 'Código Forte', 'nome': 'Nome', 'data': 'Data', 'hora': 'Hora', 'descricao': 'Descrição', 'diferenca_min': 'Diferença (min)', 'observacao': 'Observação', 'nome_empresa': 'Empresa', 'cnpj': 'CNPJ', 'setor': 'Setor', 'filial': 'Filial'})
 
 def atualizar_registro(id_registro, novo_horario=None, nova_observacao=None):
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                print(f"🛠️ Atualizando registro ID: {id_registro}")
+
                 if nova_observacao is not None:
-                    cursor.execute("UPDATE registros SET observacao = %s WHERE id = %s", (nova_observacao, id_registro))
+                    print(f"📝 Nova observação: {nova_observacao}")
+                    cursor.execute(
+                        "UPDATE registros SET observacao = %s WHERE id = %s",
+                        (nova_observacao, id_registro)
+                    )
+
                 if novo_horario is not None:
+                    print(f"⏰ Novo horário: {novo_horario}")
                     novo_obj = datetime.strptime(novo_horario, "%H:%M:%S").time()
 
                     cursor.execute("""
-                            SELECT r.descricao, r.data, r.cpf_funcionario, f.filial
-                            FROM registros r
-                            JOIN funcionarios f ON f.cpf = r.cpf_funcionario
-                            WHERE r.id = %s
-                        """, (id_registro,))
+                        SELECT r.descricao, r.data, r.cpf_funcionario, f.filial
+                        FROM registros r
+                        JOIN funcionarios f ON f.cpf = r.cpf_funcionario
+                        WHERE r.id = %s
+                    """, (id_registro,))
                     row = cursor.fetchone()
-
                     if row:
                         descricao = row['descricao']
-                        data_str  = row['data']
-                        filial_tx = row['filial'] 
+                        data_str = row['data']
+                        filial_tx = row['filial']
 
                         filial_num = None
                         if filial_tx:
-                           m = re.search(r'\d+', str(filial_tx))
-                           filial_num = int(m.group()) if m else None
+                            m = re.search(r'\d+', str(filial_tx))
+                            filial_num = int(m.group()) if m else None
 
-                    hora_prevista = get_horario_padrao(filial_num, descricao)
+                        hora_prevista = get_horario_padrao(filial_num, descricao)
 
-                    dt_reg_dia   = datetime.strptime(data_str, "%Y-%m-%d")
-                    dt_previsto  = dt_reg_dia.replace(hour=hora_prevista.hour, minute=hora_prevista.minute, second=0, microsecond=0)
-                    dt_novo      = dt_reg_dia.replace(hour=novo_obj.hour, minute=novo_obj.minute, second=novo_obj.second, microsecond=0)
+                        dt_reg_dia = datetime.strptime(data_str, "%Y-%m-%d")
+                        dt_previsto = dt_reg_dia.replace(
+                            hour=hora_prevista.hour, minute=hora_prevista.minute, second=0, microsecond=0
+                        )
+                        dt_novo = dt_reg_dia.replace(
+                            hour=novo_obj.hour, minute=novo_obj.minute, second=0, microsecond=0
+                        )
 
-                    diff_bruta = round((dt_novo - dt_previsto).total_seconds() / 60)
+                        diff_bruta = round((dt_novo - dt_previsto).total_seconds() / 60)
 
-                    if abs(diff_bruta) <= TOLERANCIA_MINUTOS:
-                       diff_final = 0
-                    elif diff_bruta > 0:
-                       diff_final = diff_bruta - TOLERANCIA_MINUTOS
-                    else:
-                       diff_final = diff_bruta + TOLERANCIA_MINUTOS
+                        if abs(diff_bruta) <= TOLERANCIA_MINUTOS:
+                            diff_final = 0
+                        elif diff_bruta > 0:
+                            diff_final = diff_bruta - TOLERANCIA_MINUTOS
+                        else:
+                            diff_final = diff_bruta + TOLERANCIA_MINUTOS
 
-                    cursor.execute(
-                      "UPDATE registros SET hora = %s, diferenca_min = %s WHERE id = %s",
-                      (novo_horario, diff_final, id_registro)
-        )
-    except ValueError: return "Formato de hora inválido. Use HH:MM:SS.", "error"
-    except psycopg2.Error as e: return f"Erro no banco de dados: {e}", "error"
+                        print(f"💡 Diferença recalculada: {diff_final} min")
+
+                        cursor.execute(
+                            "UPDATE registros SET hora = %s, diferenca_min = %s WHERE id = %s",
+                            (novo_horario, diff_final, id_registro)
+                        )
+            conn.commit()
+            print("✅ Registro atualizado e COMMIT realizado.")
+    except ValueError:
+        print("❌ Erro de formato de hora")
+        return "Formato de hora inválido. Use HH:MM:SS.", "error"
+    except psycopg2.Error as e:
+        print(f"❌ Erro no banco: {e}")
+        return f"Erro no banco de dados: {e}", "error"
     return "Registro atualizado com sucesso.", "success"
+
 
 def adicionar_funcionario(codigo, nome, nome_empresa, cnpj, cpf, cod_tipo, tipo, filial):
     if not all([codigo, nome, nome_empresa, cpf]):
