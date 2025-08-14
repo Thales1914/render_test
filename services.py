@@ -232,16 +232,27 @@ def atualizar_registro(id_registro, novo_horario=None, nova_observacao=None):
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 print(f"🛠️ Atualizando registro ID: {id_registro}")
 
+                cursor.execute("SELECT * FROM registros WHERE id = %s", (id_registro,))
+                registro_existente = cursor.fetchone()
+                if not registro_existente:
+                    print("❌ Registro não encontrado")
+                    return "Registro não encontrado.", "error"
+
+                campos_atualizados = 0
+
                 if nova_observacao is not None:
-                    print(f"📝 Nova observação: {nova_observacao}")
                     cursor.execute(
                         "UPDATE registros SET observacao = %s WHERE id = %s",
                         (nova_observacao, id_registro)
                     )
+                    campos_atualizados += cursor.rowcount
 
                 if novo_horario is not None:
-                    print(f"⏰ Novo horário: {novo_horario}")
-                    novo_obj = datetime.strptime(novo_horario, "%H:%M:%S").time()
+                    try:
+                        novo_obj = datetime.strptime(novo_horario, "%H:%M:%S").time()
+                    except ValueError:
+                        print("❌ Horário inválido recebido")
+                        return "Formato de hora inválido. Use HH:MM:SS.", "error"
 
                     cursor.execute("""
                         SELECT r.descricao, r.data, r.cpf_funcionario, f.filial
@@ -250,6 +261,7 @@ def atualizar_registro(id_registro, novo_horario=None, nova_observacao=None):
                         WHERE r.id = %s
                     """, (id_registro,))
                     row = cursor.fetchone()
+
                     if row:
                         descricao = row['descricao']
                         data_str = row['data']
@@ -279,21 +291,25 @@ def atualizar_registro(id_registro, novo_horario=None, nova_observacao=None):
                         else:
                             diff_final = diff_bruta + TOLERANCIA_MINUTOS
 
-                        print(f"💡 Diferença recalculada: {diff_final} min")
-
                         cursor.execute(
                             "UPDATE registros SET hora = %s, diferenca_min = %s WHERE id = %s",
                             (novo_horario, diff_final, id_registro)
                         )
+                        campos_atualizados += cursor.rowcount
+
+                if campos_atualizados == 0:
+                    print("⚠️ Nenhuma alteração feita")
+                    return "Nenhuma alteração foi realizada.", "warning"
+
             conn.commit()
-            print("✅ Registro atualizado e COMMIT realizado.")
-    except ValueError:
-        print("❌ Erro de formato de hora")
-        return "Formato de hora inválido. Use HH:MM:SS.", "error"
+            print("✅ Alterações salvas no banco")
+
+        return "Registro atualizado com sucesso.", "success"
+
     except psycopg2.Error as e:
         print(f"❌ Erro no banco: {e}")
         return f"Erro no banco de dados: {e}", "error"
-    return "Registro atualizado com sucesso.", "success"
+
 
 
 def adicionar_funcionario(codigo, nome, nome_empresa, cnpj, cpf, cod_tipo, tipo, filial):
